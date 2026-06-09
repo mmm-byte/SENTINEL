@@ -16,9 +16,11 @@ from agent.config import (
 
 
 def quarantine_corrupt_documents(
-    collection_name: str,
-    document_ids: list,
-    violation_summary: dict,
+    connection_string: str = None,
+    database_name: str = None,
+    collection_name: str = None,
+    document_ids: list = None,
+    violations: list = None,
     remediation_hint: str = "",
 ) -> dict:
     """
@@ -38,8 +40,11 @@ def quarantine_corrupt_documents(
           - quarantined_ids (list[str])
           - failures (list[dict]): {id, error} for any failed moves
     """
-    client = MongoClient(MONGODB_CONNECTION_STRING)
-    db = client[MONGODB_DATABASE]
+    conn = connection_string or MONGODB_CONNECTION_STRING
+    db_name = database_name or MONGODB_DATABASE
+
+    client = MongoClient(conn)
+    db = client[db_name]
 
     source_coll = db[collection_name]
     quarantine_coll_name = f"{collection_name}{QUARANTINE_COLLECTION_SUFFIX}"
@@ -48,7 +53,7 @@ def quarantine_corrupt_documents(
     quarantined: list[str] = []
     failures: list[dict] = []
 
-    for doc_id_str in document_ids:
+    for doc_id_str in (document_ids or []):
         try:
             oid = ObjectId(doc_id_str)
             doc = source_coll.find_one({"_id": oid})
@@ -63,7 +68,7 @@ def quarantine_corrupt_documents(
                     "quarantined_at": datetime.now(timezone.utc).isoformat(),
                     "source_collection": collection_name,
                     "quarantine_collection": quarantine_coll_name,
-                    "violation_summary": violation_summary,
+                    "violation_summary": violations,
                     "remediation_hint": remediation_hint or "Review schema mismatch and re-insert corrected document.",
                     "status": "PENDING_REMEDIATION",
                     "agent_version": "SENTINEL v1.0",
@@ -79,7 +84,9 @@ def quarantine_corrupt_documents(
 
     client.close()
 
+    total_attempted = len(document_ids or [])
     return {
+        "total_attempted": total_attempted,
         "quarantined_count": len(quarantined),
         "failed_count": len(failures),
         "quarantine_collection": quarantine_coll_name,

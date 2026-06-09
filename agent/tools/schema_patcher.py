@@ -13,9 +13,11 @@ from agent.tools.schema_inspector import inspect_collection_schema
 
 
 def patch_collection_schema(
-    collection_name: str,
-    fields_to_make_optional: list = None,
-    fields_to_add: dict = None,
+    connection_string: str = None,
+    database_name: str = None,
+    collection_name: str = None,
+    fields_to_relax: list = None,
+    new_field_definitions: dict = None,
     patch_reason: str = "Emergency schema relaxation by SENTINEL agent",
 ) -> dict:
     """
@@ -36,28 +38,37 @@ def patch_collection_schema(
           - validation_level (str): always "moderate" on success
           - error (str): only present on failure
     """
-    client = MongoClient(MONGODB_CONNECTION_STRING)
-    db = client[MONGODB_DATABASE]
+    conn = connection_string or MONGODB_CONNECTION_STRING
+    db_name = database_name or MONGODB_DATABASE
 
-    schema_info = inspect_collection_schema(collection_name)
-    current_schema = copy.deepcopy(schema_info.get("schema", {}))
+    client = MongoClient(conn)
+    db = client[db_name]
+
+    # Read current schema directly from the DB so that unit tests can patch MongoClient
+    coll_info = list(db.list_collections(filter={"name": collection_name}))
+    if coll_info:
+        options = coll_info[0].get("options", {})
+        validator = options.get("validator", {})
+        current_schema = copy.deepcopy(validator.get("$jsonSchema", {}))
+    else:
+        current_schema = {}
     previous_snapshot = copy.deepcopy(current_schema)
 
     patch_log = {"made_optional": [], "fields_added": []}
 
     # ── 1. Remove fields from 'required' ──────────────────────────────────────
-    if fields_to_make_optional:
+    if fields_to_relax:
         required = current_schema.get("required", [])
-        for field in fields_to_make_optional:
+        for field in fields_to_relax:
             if field in required:
                 required.remove(field)
                 patch_log["made_optional"].append(field)
         current_schema["required"] = required
 
     # ── 2. Add new field definitions to 'properties' ──────────────────────────
-    if fields_to_add:
+    if new_field_definitions:
         properties = current_schema.setdefault("properties", {})
-        for field_name, bson_type in fields_to_add.items():
+        for field_name, bson_type in new_field_definitions.items():
             properties[field_name] = {"bsonType": bson_type}
             patch_log["fields_added"].append(field_name)
 
@@ -72,6 +83,7 @@ def patch_collection_schema(
         client.close()
         return {
             "success": True,
+            "relaxed_fields": patch_log.get("made_optional", []),
             "patch_applied": patch_log,
             "previous_schema_snapshot": previous_snapshot,
             "patch_reason": patch_reason,

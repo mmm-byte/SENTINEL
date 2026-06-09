@@ -7,7 +7,7 @@ $jsonSchema validator. Returns field-level violations with severity rating.
 from agent.tools.schema_inspector import inspect_collection_schema
 
 
-def validate_payload_against_schema(collection_name: str, payload: dict) -> dict:
+def validate_payload_against_schema(payload: dict = None, schema: dict = None, collection_name: str = None) -> dict:
     """
     Validates a payload dict against the collection's JSON schema validator.
 
@@ -22,9 +22,13 @@ def validate_payload_against_schema(collection_name: str, payload: dict) -> dict
           - severity ("OK" | "WARNING" | "CRITICAL")
           - violation_count (int)
     """
-    schema_info = inspect_collection_schema(collection_name)
-    required_fields = schema_info.get("required_fields", [])
-    properties = schema_info.get("properties", {})
+    if schema is None:
+        schema_info = inspect_collection_schema(collection_name=collection_name)
+        required_fields = schema_info.get("required_fields", [])
+        properties = schema_info.get("properties", {})
+    else:
+        required_fields = schema.get("required", [])
+        properties = schema.get("properties", {})
 
     violations = []
 
@@ -33,7 +37,7 @@ def validate_payload_against_schema(collection_name: str, payload: dict) -> dict
         if field not in payload:
             violations.append({
                 "field": field,
-                "issue": "MISSING_REQUIRED_FIELD",
+                "violation_type": "MISSING_REQUIRED_FIELD",
                 "expected": "field to be present",
                 "received": "null / missing",
             })
@@ -60,7 +64,7 @@ def validate_payload_against_schema(collection_name: str, payload: dict) -> dict
         if py_type and not isinstance(received_value, py_type):
             violations.append({
                 "field": field,
-                "issue": "TYPE_MISMATCH",
+                "violation_type": "TYPE_MISMATCH",
                 "expected": expected_type,
                 "received": type(received_value).__name__,
             })
@@ -68,14 +72,14 @@ def validate_payload_against_schema(collection_name: str, payload: dict) -> dict
     # ── Severity classification ────────────────────────────────────────────────
     if not violations:
         severity = "OK"
-    elif any(v["issue"] == "MISSING_REQUIRED_FIELD" for v in violations):
+    elif any(v.get("violation_type") in ("MISSING_REQUIRED_FIELD", "TYPE_MISMATCH") for v in violations):
         severity = "CRITICAL"
     else:
         severity = "WARNING"
 
     return {
-        "is_valid": len(violations) == 0,
+        "overall_severity": severity,
         "violations": violations,
-        "severity": severity,
         "violation_count": len(violations),
+        "is_valid": len(violations) == 0,
     }

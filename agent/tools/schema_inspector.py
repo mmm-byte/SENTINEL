@@ -9,7 +9,7 @@ from pymongo import MongoClient
 from agent.config import MONGODB_CONNECTION_STRING, MONGODB_DATABASE
 
 
-def inspect_collection_schema(collection_name: str) -> dict:
+def inspect_collection_schema(connection_string: str = None, database_name: str = None, collection_name: str = None) -> dict:
     """
     Inspects the current JSON Schema validator of a MongoDB collection.
 
@@ -24,8 +24,11 @@ def inspect_collection_schema(collection_name: str) -> dict:
           - required_fields (list[str]): fields marked as required
           - properties (dict): field definitions keyed by field name
     """
-    client = MongoClient(MONGODB_CONNECTION_STRING)
-    db = client[MONGODB_DATABASE]
+    conn = connection_string or MONGODB_CONNECTION_STRING
+    db_name = database_name or MONGODB_DATABASE
+
+    client = MongoClient(conn)
+    db = client[db_name]
 
     coll_info = list(db.list_collections(filter={"name": collection_name}))
 

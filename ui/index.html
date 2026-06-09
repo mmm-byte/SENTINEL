@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PROJECT METACOGNITION — SRE Control Cockpit</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            background-color: #0E1117;
+            color: #C9D1D9;
+            line-height: 1.6;
+        }
+
+        .header {
+            background-color: #161B22;
+            border-bottom: 2px solid #30363D;
+            padding: 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #58A6FF;
+        }
+
+        .header-metrics {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.9rem;
+        }
+
+        .metric {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .metric-label {
+            color: #8B949E;
+            font-size: 0.8rem;
+        }
+
+        .metric-value {
+            color: #79C0FF;
+            font-weight: bold;
+        }
+
+        .container {
+            display: flex;
+            height: calc(100vh - 80px);
+        }
+
+        .left-rail {
+            width: 300px;
+            background-color: #0D1117;
+            border-right: 1px solid #30363D;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+
+        .stage-node {
+            padding: 1rem;
+            margin-bottom: 0.8rem;
+            background-color: #161B22;
+            border: 1px solid #30363D;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .stage-node:hover {
+            background-color: #1C2128;
+            border-color: #58A6FF;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .status-dot.idle {
+            background-color: #6E7681;
+        }
+
+        .status-dot.running {
+            background-color: #FFA657;
+            animation: pulse 1s infinite;
+        }
+
+        .status-dot.success {
+            background-color: #3FB950;
+        }
+
+        .status-dot.error {
+            background-color: #FF3B30;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .stage-name {
+            font-size: 0.9rem;
+            font-weight: bold;
+        }
+
+        .center {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem;
+            overflow-y: auto;
+        }
+
+        .topology-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .topology-node {
+            background-color: #161B22;
+            border: 1px solid #30363D;
+            border-radius: 8px;
+            padding: 1.5rem;
+            text-align: center;
+            position: relative;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+
+        .topology-node.active {
+            border-color: #58A6FF;
+            box-shadow: 0 0 10px rgba(88, 166, 255, 0.3);
+        }
+
+        .topology-node.success {
+            border-color: #3FB950;
+            box-shadow: 0 0 10px rgba(63, 185, 80, 0.3);
+        }
+
+        .topology-node.error {
+            border-color: #FF3B30;
+            box-shadow: 0 0 10px rgba(255, 59, 48, 0.3);
+        }
+
+        .node-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .node-label {
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: #79C0FF;
+        }
+
+        .node-status {
+            font-size: 0.75rem;
+            color: #8B949E;
+            margin-top: 0.5rem;
+        }
+
+        .timeline {
+            background-color: #161B22;
+            border: 1px solid #30363D;
+            border-radius: 8px;
+            padding: 1.5rem;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .timeline-title {
+            font-size: 1rem;
+            font-weight: bold;
+            color: #79C0FF;
+            margin-bottom: 1rem;
+        }
+
+        .timeline-event {
+            padding: 0.8rem;
+            margin-bottom: 0.6rem;
+            background-color: #0D1117;
+            border-left: 3px solid #30363D;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        .timeline-event.success {
+            border-left-color: #3FB950;
+            color: #3FB950;
+        }
+
+        .timeline-event.running {
+            border-left-color: #FFA657;
+            color: #FFA657;
+        }
+
+        .timeline-event.error {
+            border-left-color: #FF3B30;
+            color: #FF3B30;
+        }
+
+        .right-panel {
+            width: 350px;
+            background-color: #0D1117;
+            border-left: 1px solid #30363D;
+            padding: 1rem;
+            overflow-y: auto;
+            font-size: 0.85rem;
+        }
+
+        .panel-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .panel-title {
+            font-weight: bold;
+            color: #79C0FF;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .panel-content {
+            background-color: #161B22;
+            border: 1px solid #30363D;
+            border-radius: 4px;
+            padding: 0.8rem;
+            word-break: break-all;
+            color: #C9D1D9;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 0.6rem;
+            border: none;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background-color: #238636;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #2EA043;
+        }
+
+        .btn-secondary {
+            background-color: #30363D;
+            color: #C9D1D9;
+        }
+
+        .btn-secondary:hover {
+            background-color: #3D444D;
+        }
+
+        .health-status {
+            font-size: 1.2rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .health-status.critical {
+            color: #FF3B30;
+        }
+
+        .health-status.warning {
+            color: #FFA657;
+        }
+
+        .health-status.healthy {
+            color: #3FB950;
+        }
+
+        .separator {
+            height: 1px;
+            background-color: #30363D;
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <div class="header-title">PROJECT METACOGNITION // ENTERPRISE AUTONOMOUS SRE COCKPIT</div>
+        </div>
+        <div class="header-metrics">
+            <div class="metric">
+                <div class="metric-label">SYSTEM HEALTH</div>
+                <div id="systemHealth" class="health-status critical">● CRITICAL</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">MTTD</div>
+                <div class="metric-value" id="mttd">0.12s</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">MTTR</div>
+                <div class="metric-value" id="mttr">11.42s</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="left-rail">
+            <div class="stage-node">
+                <div class="status-dot running"></div>
+                <div class="stage-name">[1. DYNATRACE]</div>
+            </div>
+            <div class="stage-node">
+                <div class="status-dot running"></div>
+                <div class="stage-name">[2. ELASTIC]</div>
+            </div>
+            <div class="stage-node">
+                <div class="status-dot running"></div>
+                <div class="stage-name">[3. GITLAB]</div>
+            </div>
+            <div class="stage-node">
+                <div class="status-dot idle"></div>
+                <div class="stage-name">[4. MONGODB]</div>
+            </div>
+            <div class="stage-node">
+                <div class="status-dot idle"></div>
+                <div class="stage-name">[5. FIVETRAN]</div>
+            </div>
+            <div class="stage-node">
+                <div class="status-dot idle"></div>
+                <div class="stage-name">[6. ARIZE]</div>
+            </div>
+        </div>
+
+        <div class="center">
+            <div class="topology-grid">
+                <div class="topology-node active">
+                    <div class="node-icon">📊</div>
+                    <div class="node-label">Dynatrace</div>
+                    <div class="node-status">Pod Topology Query</div>
+                </div>
+                <div class="topology-node active">
+                    <div class="node-icon">📝</div>
+                    <div class="node-label">Elastic</div>
+                    <div class="node-status">Error Log Search</div>
+                </div>
+                <div class="topology-node active">
+                    <div class="node-icon">🔀</div>
+                    <div class="node-label">GitLab</div>
+                    <div class="node-status">Branch & MR Creation</div>
+                </div>
+            </div>
+
+            <div class="timeline">
+                <div class="timeline-title">📋 Execution Timeline</div>
+                <div class="timeline-event success">✓ [10:00:00.000] Stage 1: Dynatrace topology query completed — pod: k8s-pod-x92-node4</div>
+                <div class="timeline-event success">✓ [10:00:02.120] Stage 2: Elastic logs parsed — error: BSONType mismatch at src/payments/processor.py:243</div>
+                <div class="timeline-event success">✓ [10:00:04.890] Stage 3: GitLab blame completed — commit: fa83b2cc</div>
+                <div class="timeline-event success">✓ [10:00:06.234] Stage 3: Hotfix branch created — hotfix/auto/2026-06-09-76208b27</div>
+                <div class="timeline-event success">✓ [10:00:11.420] Stage 3: Merge Request opened — MR#42</div>
+                <div class="timeline-event running">⟳ [10:00:12.100] Awaiting Stage 4: MongoDB schema adjustment...</div>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <div class="panel-section">
+                <div class="panel-title">Active Stage</div>
+                <div class="panel-content">
+                    Stage 3: GitLab
+                    Root Cause Auditing
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">Error Signature</div>
+                <div class="panel-content">
+                    BSONType mismatch:
+                    expected objectId
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">Affected File</div>
+                <div class="panel-content">
+                    src/payments/processor.py:243
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">Suspected Commit</div>
+                <div class="panel-content">
+                    fa83b2cc1deadbeef
+                    "refactor: update BSON..."
+                </div>
+            </div>
+
+            <div class="separator"></div>
+
+            <div class="panel-section">
+                <div class="panel-title">Merge Request</div>
+                <div class="panel-content">
+                    <a href="#" style="color: #58A6FF; text-decoration: none;">
+                        https://gitlab.com/org/repo/-/merge_requests/42
+                    </a>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn btn-primary">Approve</button>
+                    <button class="btn btn-secondary">Reject</button>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <div class="panel-title">Next Action</div>
+                <div class="panel-content">
+                    Pause until manual approval.
+                    Stage 4 (MongoDB) ready on signal.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Simulated live update (for demo purposes)
+        function updateHealthStatus() {
+            const statuses = ['critical', 'warning', 'healthy'];
+            const colors = {
+                'critical': '● CRITICAL',
+                'warning': '● WARNING',
+                'healthy': '● HEALTHY'
+            };
+            
+            // For demo, cycle through or keep critical
+            const statusEl = document.getElementById('systemHealth');
+            // Keep as critical to show active incident
+        }
+
+        // Simulate status pulse animations
+        setInterval(() => {
+            const dots = document.querySelectorAll('.status-dot.running');
+            dots.forEach(dot => {
+                dot.style.opacity = Math.random() > 0.5 ? 1 : 0.5;
+            });
+        }, 800);
+
+        // Responsive interactions
+        document.querySelectorAll('.stage-node').forEach(node => {
+            node.addEventListener('click', function() {
+                document.querySelectorAll('.stage-node').forEach(n => {
+                    n.style.backgroundColor = '#161B22';
+                });
+                this.style.backgroundColor = '#1C2128';
+            });
+        });
+    </script>
+</body>
+</html>
