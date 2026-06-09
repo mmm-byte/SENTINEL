@@ -19,3 +19,5 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
 GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")          # AI Studio fallback
+# Approvals
+AUTO_APPROVE_SCHEMA_CHANGES = os.getenv("AUTO_APPROVE_SCHEMA_CHANGES", "false").lower() in ("1", "true", "yes")

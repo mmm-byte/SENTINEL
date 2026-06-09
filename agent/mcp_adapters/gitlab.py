@@ -2,8 +2,8 @@ from agent.jsonrpc.client import JSONRPCClient
 
 
 class GitLabAdapter:
-    def __init__(self, endpoint: str):
-        self.client = JSONRPCClient(endpoint)
+    def __init__(self, endpoint: str, **client_kwargs):
+        self.client = JSONRPCClient(endpoint, **client_kwargs)
 
     def query_blame(self, file_path: str):
         params = {

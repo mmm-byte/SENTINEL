@@ -2,8 +2,8 @@ from agent.jsonrpc.client import JSONRPCClient
 
 
 class ArizeAdapter:
-    def __init__(self, endpoint: str):
-        self.client = JSONRPCClient(endpoint)
+    def __init__(self, endpoint: str, **client_kwargs):
+        self.client = JSONRPCClient(endpoint, **client_kwargs)
 
     def ingest_trace_and_evaluate(self, trace: dict):
         params = {"action": "ingest_and_score", "payload": {"trace": trace}}

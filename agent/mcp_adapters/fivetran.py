@@ -2,8 +2,8 @@ from agent.jsonrpc.client import JSONRPCClient
 
 
 class FivetranAdapter:
-    def __init__(self, endpoint: str):
-        self.client = JSONRPCClient(endpoint)
+    def __init__(self, endpoint: str, **client_kwargs):
+        self.client = JSONRPCClient(endpoint, **client_kwargs)
 
     def adjust_connector(self, connector_id: str, mapping_changes: dict):
         params = {

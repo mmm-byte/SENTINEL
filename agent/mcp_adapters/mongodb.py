@@ -2,8 +2,8 @@ from agent.jsonrpc.client import JSONRPCClient
 
 
 class MongoDBAdapter:
-    def __init__(self, endpoint: str):
-        self.client = JSONRPCClient(endpoint)
+    def __init__(self, endpoint: str, **client_kwargs):
+        self.client = JSONRPCClient(endpoint, **client_kwargs)
 
     def modify_collection_validator(self, db: str, collection: str, modification: dict):
         params = {
