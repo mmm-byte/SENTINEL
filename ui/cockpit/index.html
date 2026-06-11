@@ -1,0 +1,278 @@
+<!doctype html>
+<!--
+  SENTINEL — SRE Control Cockpit
+  ------------------------------
+  Single-file, no-build HTML UI. Talks to the FastAPI gateway at /api.
+  - Stage flow visualization (Check / Ask / Fix) for all six healing stages
+  - Live status, audit, and approval panels
+  - Mock-friendly: works against the demo orchestrator with no cloud keys
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SENTINEL · SRE Control Cockpit</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0E1117;
+      --panel: #161B22;
+      --panel-2: #1E242C;
+      --line: #2A313B;
+      --fg: #E6EDF3;
+      --muted: #8B949E;
+      --ok: #2EA043;
+      --warn: #D29922;
+      --bad: #F85149;
+      --info: #58A6FF;
+      --accent: #7EE787;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+      font-family: Inter, -apple-system, system-ui, sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    header .brand { display: flex; align-items: center; gap: 12px; }
+    header .brand .dot { width: 12px; height: 12px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+    header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+    header .meta { display: flex; gap: 18px; color: var(--muted); font-size: 12px; }
+    header .meta strong { color: var(--fg); }
+    main { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 16px;
+      padding: 16px; min-height: calc(100vh - 56px); }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 16px; }
+    .card h2 { margin: 0 0 12px 0; font-size: 14px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 1.2px; }
+    .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stage { background: var(--panel-2); border: 1px solid var(--line);
+      border-radius: 8px; padding: 12px; position: relative; cursor: pointer;
+      transition: transform .12s ease, border-color .12s ease; }
+    .stage:hover { transform: translateY(-1px); border-color: var(--info); }
+    .stage .row { display: flex; align-items: center; justify-content: space-between; }
+    .stage .name { font-weight: 600; font-size: 14px; }
+    .stage .partner { color: var(--muted); font-size: 11px; }
+    .pill { font-size: 10px; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--line); color: var(--muted); }
+    .pill.ok { color: var(--ok); border-color: var(--ok); }
+    .pill.warn { color: var(--warn); border-color: var(--warn); }
+    .pill.bad { color: var(--bad); border-color: var(--bad); }
+    .pill.run { color: var(--info); border-color: var(--info); }
+    .check-fix { display: flex; gap: 8px; margin-top: 12px; }
+    .badge { flex: 1; text-align: center; font-size: 11px; padding: 6px 0;
+      border-radius: 6px; border: 1px solid var(--line); }
+    .badge.check { background: rgba(88,166,255,.08); border-color: var(--info); }
+    .badge.ask   { background: rgba(210,153,34,.08); border-color: var(--warn); }
+    .badge.fix   { background: rgba(46,160,67,.10); border-color: var(--ok); }
+    .trace { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;
+      line-height: 1.55; color: #CDD9E5; background: var(--panel-2);
+      border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+      height: calc(100% - 40px); overflow: auto; white-space: pre-wrap; }
+    .trace .stage { background: transparent; border: 0; padding: 0; margin: 0;
+      cursor: default; }
+    .trace .ts { color: var(--muted); }
+    .trace .ok  { color: var(--ok); }
+    .trace .bad { color: var(--bad); }
+    .trace .info { color: var(--info); }
+    .trace .warn { color: var(--warn); }
+    .controls { display: flex; gap: 8px; margin-bottom: 12px; }
+    button { background: var(--panel-2); border: 1px solid var(--line); color: var(--fg);
+      padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    button.primary { background: var(--info); color: #0B1220; border-color: var(--info); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .metric { display: flex; gap: 12px; }
+    .metric .box { flex: 1; background: var(--panel-2); padding: 12px;
+      border-radius: 8px; border: 1px solid var(--line); }
+    .metric .box .k { font-size: 11px; color: var(--muted); }
+    .metric .box .v { font-size: 20px; font-weight: 700; margin-top: 2px; }
+    .alert { background: rgba(248,81,73,.1); border: 1px solid var(--bad);
+      padding: 10px 12px; border-radius: 8px; font-size: 12px; }
+    .anim-pulse { animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+    .tag { display: inline-block; padding: 1px 6px; border-radius: 4px;
+      background: rgba(88,166,255,.1); color: var(--info); font-size: 10px;
+      margin-left: 6px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="dot"></div>
+    <h1>SENTINEL · SRE Control Cockpit</h1>
+  </div>
+  <div class="meta">
+    <div>Mode: <strong id="mode">MOCK</strong></div>
+    <div>Run id: <strong id="run-id">—</strong></div>
+    <div>Last: <strong id="last-update">—</strong></div>
+  </div>
+</header>
+
+<main>
+  <!-- LEFT: stages -->
+  <section class="card">
+    <h2>Healing Stages</h2>
+    <div class="stages" id="stages"></div>
+    <div style="height: 16px"></div>
+    <h2>Approval Gate</h2>
+    <div id="approval" class="alert" style="display:none"></div>
+    <div class="controls">
+      <button class="primary" id="btn-trigger">▶ Trigger Healing Run</button>
+      <button id="btn-approve">✓ Approve</button>
+      <button id="btn-reject">✗ Reject</button>
+    </div>
+  </section>
+
+  <!-- CENTER: trace -->
+  <section class="card">
+    <h2>Live Audit & Trace</h2>
+    <div class="metric" style="margin-bottom: 12px">
+      <div class="box"><div class="k">MTTD</div><div class="v" id="mttd">—</div></div>
+      <div class="box"><div class="k">MTTR</div><div class="v" id="mttr">—</div></div>
+      <div class="box"><div class="k">Compliance</div><div class="v" id="comp">—</div></div>
+    </div>
+    <pre class="trace" id="trace"></pre>
+  </section>
+
+  <!-- RIGHT: detail + partner usage -->
+  <section class="card">
+    <h2>Active Partner</h2>
+    <div id="partner-detail" style="font-size: 13px; line-height: 1.5">
+      Pick a stage on the left to inspect its details.
+    </div>
+    <div style="height: 16px"></div>
+    <h2>Partner Usage</h2>
+    <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px">
+      SENTINEL orchestrates across six partner systems.
+    </div>
+    <ul id="partners" style="list-style: none; padding-left: 0; margin: 0; font-size: 13px"></ul>
+  </section>
+</main>
+
+<script>
+const STAGES = [
+  { id: 'stage1_ingest',           name: 'Stage 1 · Ingest',         partner: 'Dynatrace', phase: 'check' },
+  { id: 'stage2_logs',             name: 'Stage 2 · Logs',           partner: 'Elastic',   phase: 'check' },
+  { id: 'stage3_git_remediation',  name: 'Stage 3 · Git Remediation',partner: 'GitLab',    phase: 'fix'   },
+  { id: 'stage4_db_stabilize',     name: 'Stage 4 · DB Stabilize',   partner: 'MongoDB',   phase: 'ask'   },
+  { id: 'stage5_downstream_align', name: 'Stage 5 · Downstream',     partner: 'Fivetran',  phase: 'fix'   },
+  { id: 'stage6_cognitive_assess', name: 'Stage 6 · Cognitive',      partner: 'Arize',     phase: 'check' },
+];
+
+const PARTNERS = [
+  { name: 'MongoDB',  use: 'Schema continuity, safe `collMod`, quarantine' },
+  { name: 'Arize',    use: 'Trace scoring, guardrail tuning' },
+  { name: 'Elastic',  use: 'Log triage, stack-trace extraction' },
+  { name: 'Fivetran', use: 'Pipeline recovery, schema drift tolerance' },
+  { name: 'GitLab',   use: 'Hotfix branch + MR with audit trail' },
+  { name: 'Dynatrace',use: 'Alert ingestion, service isolation' },
+];
+
+const $ = (id) => document.getElementById(id);
+const stages = $('stages');
+const partners = $('partners');
+const trace = $('trace');
+
+function fmtTime(t) { return new Date(t).toLocaleTimeString(); }
+function badge(s) {
+  if (!s) return '<span class="pill">idle</span>';
+  if (s === 'running')  return '<span class="pill run anim-pulse">running</span>';
+  if (s === 'success')  return '<span class="pill ok">success</span>';
+  if (s === 'failed')   return '<span class="pill bad">failed</span>';
+  if (s === 'awaiting_approval') return '<span class="pill warn">awaiting</span>';
+  return `<span class="pill">${s}</span>`;
+}
+function phaseBadge(p) {
+  return `<span class="badge ${p}">${p === 'check' ? 'Check' : p === 'ask' ? 'Ask' : 'Fix'}</span>`;
+}
+
+function renderStages(status) {
+  stages.innerHTML = '';
+  STAGES.forEach((s) => {
+    const st = status?.[s.id] || {};
+    const el = document.createElement('div');
+    el.className = 'stage';
+    el.innerHTML = `
+      <div class="row">
+        <div>
+          <div class="name">${s.name}</div>
+          <div class="partner">${s.partner} <span class="tag">${s.phase.toUpperCase()}</span></div>
+        </div>
+        ${badge(st.status)}
+      </div>
+      <div class="check-fix">${phaseBadge(s.phase)}</div>
+    `;
+    el.onclick = () => showPartnerDetail(s, st);
+    stages.appendChild(el);
+  });
+}
+
+function renderPartners() {
+  partners.innerHTML = '';
+  PARTNERS.forEach((p) => {
+    const li = document.createElement('li');
+    li.style.padding = '6px 0';
+    li.style.borderBottom = '1px solid var(--line)';
+    li.innerHTML = `<strong>${p.name}</strong> — <span style="color:var(--muted)">${p.use}</span>`;
+    partners.appendChild(li);
+  });
+}
+
+function showPartnerDetail(s, st) {
+  $('partner-detail').innerHTML = `
+    <div><strong>${s.name}</strong></div>
+    <div style="color:var(--muted)">Partner: ${s.partner}</div>
+    <div style="margin-top:8px">Status: ${st.status || 'idle'}</div>
+    <div>Started: ${st.started_at ? fmtTime(st.started_at) : '—'}</div>
+    <div>Finished: ${st.finished_at ? fmtTime(st.finished_at) : '—'}</div>
+    <div style="margin-top:8px; font-family:ui-monospace,monospace; font-size:12px; color:#9DA7B3">
+      ${st.message || ''}
+    </div>
+  `;
+}
+
+function pushTrace(line, cls='') {
+  const ts = new Date().toLocaleTimeString();
+  const html = `<span class="ts">[${ts}]</span> <span class="${cls}">${line}</span>\n`;
+  trace.insertAdjacentHTML('afterbegin', html);
+}
+
+async function loadStatus() {
+  const r = await fetch('/api/status');
+  const j = await r.json();
+  $('mode').textContent = j.mode || 'MOCK';
+  $('run-id').textContent = j.run_id || '—';
+  $('last-update').textContent = j.last_update ? fmtTime(j.last_update) : '—';
+  $('mttd').textContent = j.mttd != null ? j.mttd.toFixed(2) + 's' : '—';
+  $('mttr').textContent = j.mttr != null ? j.mttr.toFixed(2) + 's' : '—';
+  $('comp').textContent = j.compliance != null ? Math.round(j.compliance * 100) + '%' : '—';
+  renderStages(j.stages || {});
+  const ap = j.approval_pending;
+  if (ap) {
+    $('approval').style.display = 'block';
+    $('approval').textContent = `Awaiting human approval for ${ap.stage_id}: ${ap.reason || 'schema change requested'}`;
+  } else {
+    $('approval').style.display = 'none';
+  }
+  if (j.last_event) pushTrace(j.last_event.message, j.last_event.level || 'info');
+}
+
+$('btn-trigger').onclick = async () => {
+  $('trace').textContent = '';
+  pushTrace('Triggering healing run…', 'info');
+  await fetch('/api/run', { method: 'POST' });
+};
+$('btn-approve').onclick = async () => {
+  await fetch('/api/approve', { method: 'POST' });
+  pushTrace('Approval granted by operator.', 'ok');
+};
+$('btn-reject').onclick = async () => {
+  await fetch('/api/reject', { method: 'POST' });
+  pushTrace('Approval rejected by operator.', 'bad');
+};
+
+renderStages();
+renderPartners();
+loadStatus();
+setInterval(loadStatus, 1500);
+</script>
+</body>
+</html>

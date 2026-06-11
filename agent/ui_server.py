@@ -1,69 +1,70 @@
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-import uvicorn
-from datetime import datetime
+"""SRE Control Cockpit FastAPI server.
+
+This module exposes:
+  GET  /            -> the SRE Control Cockpit HTML
+  GET  /api/status  -> live status JSON (drives the UI)
+  POST /api/run     -> trigger a healing run
+  POST /api/approve -> approve the pending Stage 4 schema change
+  POST /api/reject  -> reject the pending Stage 4 schema change
+
+It uses a MockOrchestrator by default so the UI works end-to-end with
+no cloud credentials. The real Orchestrator can be wired in by replacing
+the ``_driver`` factory.
+"""
+from __future__ import annotations
+
 import os
+from typing import Any, Dict
 
-app = FastAPI(title="SRE Control Cockpit")
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, JSONResponse
+import uvicorn
 
+from agent.mock_orchestrator import MockOrchestrator
 
-class StageStatus(BaseModel):
-    name: str
-    status: str  # idle, running, success, error
-    duration_ms: int = 0
-    error: str = None
-
-
-class ExecutionStatus(BaseModel):
-    timestamp: str
-    mttd_ms: float
-    mttr_ms: float
-    system_health: str  # critical, warning, healthy
-    stages: list[StageStatus]
-    timeline_events: list[str]
+app = FastAPI(title="SENTINEL · SRE Control Cockpit")
+_driver = MockOrchestrator()
 
 
-# Serve static UI
+# ── UI serving ────────────────────────────────────────────────────────────────
+_UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui", "cockpit")
+os.makedirs(_UI_DIR, exist_ok=True)
+
+
 @app.get("/")
-async def serve_ui():
-    ui_path = os.path.join(os.path.dirname(__file__), "..", "ui", "index.html")
-    return FileResponse(ui_path)
+async def serve_index() -> FileResponse:
+    return FileResponse(os.path.join(_UI_DIR, "index.html"))
 
 
-# API endpoint for live status
+# ── API ───────────────────────────────────────────────────────────────────────
 @app.get("/api/status")
-async def get_status() -> ExecutionStatus:
-    """Return current execution status for the cockpit UI."""
-    return ExecutionStatus(
-        timestamp=datetime.utcnow().isoformat(),
-        mttd_ms=120.0,
-        mttr_ms=11420.0,
-        system_health="critical",
-        stages=[
-            StageStatus(name="Dynatrace", status="success", duration_ms=2120),
-            StageStatus(name="Elastic", status="success", duration_ms=2770),
-            StageStatus(name="GitLab", status="success", duration_ms=5186),
-            StageStatus(name="MongoDB", status="idle"),
-            StageStatus(name="Fivetran", status="idle"),
-            StageStatus(name="Arize", status="idle"),
-        ],
-        timeline_events=[
-            "✓ [10:00:00.000] Stage 1: Dynatrace topology query completed",
-            "✓ [10:00:02.120] Stage 2: Elastic logs parsed",
-            "✓ [10:00:04.890] Stage 3: GitLab blame completed",
-            "✓ [10:00:06.234] Hotfix branch created",
-            "✓ [10:00:11.420] Merge Request opened",
-            "⟳ [10:00:12.100] Awaiting Stage 4...",
-        ],
-    )
+async def get_status() -> JSONResponse:
+    return JSONResponse(_driver.status())
 
 
-def run(host: str = "127.0.0.1", port: int = 8080):
-    """Start the UI server."""
+@app.post("/api/run")
+async def post_run() -> Dict[str, Any]:
+    run_id = _driver.trigger()
+    return {"ok": True, "run_id": run_id}
+
+
+@app.post("/api/approve")
+async def post_approve() -> Dict[str, Any]:
+    _driver.approve()
+    return {"ok": True}
+
+
+@app.post("/api/reject")
+async def post_reject() -> Dict[str, Any]:
+    _driver.reject()
+    return {"ok": True}
+
+
+def run(host: str = "127.0.0.1", port: int = 8080) -> None:
+    """Start the cockpit UI server (dev mode)."""
     uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
     run()
+
