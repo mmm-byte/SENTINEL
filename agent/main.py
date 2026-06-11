@@ -2,10 +2,15 @@
 SENTINEL — MongoDB Schema Continuity Agent
 ==========================================
 Google Cloud Rapid Agent Hackathon 2026
-Partner Track: MongoDB
+Partner Tracks: MongoDB · Arize · Dynatrace · Elastic · Fivetran · GitLab
 
 Entry point for the SENTINEL agent. Combines:
-  - MongoDB MCP Server (official partner integration)
+  - MongoDB MCP Server          (Track 1: MongoDB)
+  - Arize Phoenix tracing       (Track 2: Arize — via observability.py)
+  - Dynatrace OTel export       (Track 3: Dynatrace — via observability.py)
+  - Elastic incident memory     (Track 6: Elastic — tool registered below)
+  - Fivetran pipeline healer    (Track 4: Fivetran — tool registered below)
+  - GitLab rollback agent       (Track 5: GitLab — tool registered below)
   - Custom 5-step tool pipeline (SENTINEL-specific logic)
 
 Run locally:   python -m agent.main
@@ -36,12 +41,19 @@ from agent.tools import (
     quarantine_corrupt_documents,
     validate_payload_against_schema,
 )
+from agent.tools.elastic_memory import search_incident_history
+from orchestrator.fivetran_agent import list_fivetran_connectors, trigger_fivetran_resync
+from orchestrator.gitlab_agent import open_rollback_merge_request
 
-# ── Gemini auth: prefer Vertex AI, fall back to AI Studio key ─────────────────
+# ── Observability: Arize Phoenix + Dynatrace (Tracks 2 & 3) ─────────────────────
+from agent.observability import setup_observability
+setup_observability()  # no-op if env vars absent — never breaks the pipeline
+
+# ── Gemini auth: prefer Vertex AI, fall back to AI Studio key ──────────────────
 if GOOGLE_API_KEY:
     os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
-# ── SENTINEL system instruction ───────────────────────────────────────────────
+# ── SENTINEL system instruction ────────────────────────────────────────────────
 SENTINEL_INSTRUCTION = """
 You are SENTINEL, an autonomous MongoDB database continuity agent built on
 Google ADK and powered by Gemini. Your mission is to detect, contain, and
@@ -49,6 +61,12 @@ report schema violations in real-time without interrupting application traffic.
 
 When you receive a schema violation alert containing a collection name and a
 corrupt payload, you MUST execute this exact 5-step pipeline in sequence:
+
+STEP 0 (OPTIONAL) — HISTORY CHECK
+  Call `search_incident_history` to check if SENTINEL has seen similar
+  violations in this collection before. If a past remediation succeeded,
+  you may use that strategy directly rather than re-reasoning from scratch.
+  Skip this step if no history is found.
 
 STEP 1 — INSPECT
   Call `inspect_collection_schema` to read the current $jsonSchema validator
@@ -76,31 +94,40 @@ STEP 5 — REPORT
   structured incident report. Set resolution_status to "CONTAINED" if all steps
   succeeded, or "ESCALATE" if any step failed.
 
-After all 5 steps, present the incident report clearly:
+STEP 6 (AUTOMATIC) — DOWNSTREAM ACTIONS
+  After generating the report:
+  - If status=ESCALATE: call `open_rollback_merge_request` to create a GitLab MR
+    for human-reviewed rollback of the schema-breaking commit.
+  - Always: call `trigger_fivetran_resync` with the appropriate connector_id
+    to re-align the downstream data warehouse after schema healing.
+    (Use `list_fivetran_connectors` first if connector_id is unknown.)
+
+After all steps, present the incident report clearly:
   - Lead with the INCIDENT ID and STATUS
   - Show the executive summary
   - List violations in a numbered format
   - List next actions as a checklist
 
 CRITICAL RULES:
-  - Never skip a step. All 5 must run every time.
+  - Never skip steps 1-5. All must run every time.
   - Never set validationLevel to "off" — always use "moderate" during patches.
   - Never permanently delete documents — quarantine only.
   - If a step fails, still continue to the report step with ESCALATE status.
-  - You have access to the MongoDB MCP tools for raw database operations.
-    Use them for ad-hoc queries or diagnostics outside the 5-step pipeline.
+  - You have access to MongoDB MCP tools for raw database ops.
 """
 
 
 def build_sentinel_agent() -> LlmAgent:
     """
-    Constructs the SENTINEL LlmAgent with:
-      - MongoDB MCP Server toolset (official partner MCP integration)
+    Constructs the SENTINEL LlmAgent with all 6 partner track integrations:
+      - MongoDB MCP Server toolset       (Track 1)
+      - Arize + Dynatrace via init       (Tracks 2 & 3)
+      - Fivetran tools                   (Track 4)
+      - GitLab tool                      (Track 5)
+      - Elastic search_incident_history  (Track 6)
       - Custom 5-step SENTINEL pipeline tools
     """
-    # ── MongoDB MCP Server (official partner integration) ──────────────────────
-    # This gives the agent native MongoDB capabilities: find, aggregate,
-    # listCollections, createIndex, runCommand, etc.
+    # ── Track 1: MongoDB MCP Server ──────────────────────────────────────────────
     mongodb_mcp_toolset = MCPToolset(
         connection_params=StdioServerParameters(
             command="npx",
@@ -113,13 +140,29 @@ def build_sentinel_agent() -> LlmAgent:
         )
     )
 
-    # ── SENTINEL custom pipeline tools ────────────────────────────────────────
-    custom_tools = [
+    # ── Custom 5-step SENTINEL pipeline tools ─────────────────────────────────
+    core_tools = [
         inspect_collection_schema,
         validate_payload_against_schema,
         patch_collection_schema,
         quarantine_corrupt_documents,
         generate_incident_report,
+    ]
+
+    # ── Track 4: Fivetran pipeline healer ─────────────────────────────────────
+    fivetran_tools = [
+        list_fivetran_connectors,
+        trigger_fivetran_resync,
+    ]
+
+    # ── Track 5: GitLab rollback agent ───────────────────────────────────────
+    gitlab_tools = [
+        open_rollback_merge_request,
+    ]
+
+    # ── Track 6: Elastic incident memory ──────────────────────────────────────
+    elastic_tools = [
+        search_incident_history,
     ]
 
     agent = LlmAgent(
@@ -128,15 +171,22 @@ def build_sentinel_agent() -> LlmAgent:
         description=(
             "Autonomous MongoDB schema continuity agent. "
             "Detects, patches, quarantines, and reports schema violations "
-            "in real time without interrupting application traffic."
+            "in real time without interrupting application traffic. "
+            "Integrated with Arize Phoenix, Dynatrace, Elastic, Fivetran, and GitLab."
         ),
         instruction=SENTINEL_INSTRUCTION,
-        tools=[mongodb_mcp_toolset, *custom_tools],
+        tools=[
+            mongodb_mcp_toolset,
+            *core_tools,
+            *fivetran_tools,
+            *gitlab_tools,
+            *elastic_tools,
+        ],
     )
     return agent
 
 
-# ── Module-level agent instance (used by `adk web` and `adk run`) ─────────────
+# ── Module-level agent instance (used by `adk web` and `adk run`) ────────────────
 root_agent = build_sentinel_agent()
 
 
@@ -167,6 +217,7 @@ async def run_sentinel(collection_name: str, corrupt_payload: dict) -> None:
 
     print(f"\n{'='*60}")
     print("  SENTINEL — MongoDB Schema Continuity Agent")
+    print("  Tracks: MongoDB · Arize · Dynatrace · Elastic · Fivetran · GitLab")
     print(f"{'='*60}")
     print(f"  Target collection : {collection_name}")
     print(f"  Payload fields    : {list(corrupt_payload.keys())}")
@@ -185,11 +236,10 @@ async def run_sentinel(collection_name: str, corrupt_payload: dict) -> None:
 
 
 if __name__ == "__main__":
-    # Quick smoke-test: simulate a corrupt payload hitting the 'orders' collection
     test_payload = {
         "order_id": 12345,        # TYPE_MISMATCH: should be string
         "customer_name": "Alice",
-        # "amount" field is missing — MISSING_REQUIRED_FIELD
+        # "amount" field missing — MISSING_REQUIRED_FIELD
         "status": "pending",
     }
     asyncio.run(run_sentinel("orders", test_payload))
