@@ -1,3 +1,4 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
 google-adk>=0.5.0
 pymongo[srv]>=4.6.0
 google-cloud-aiplatform>=1.50.0
@@ -7,3 +8,21 @@ rich>=13.0.0
 httpx>=0.24.0
 fastapi>=0.95.0
 uvicorn>=0.22.0
+requests>=2.31.0
+
+# ── Track: Arize Phoenix (observability + self-introspection) ─────────────────
+arize-phoenix-otel>=0.6.0
+openinference-instrumentation-google-adk>=0.1.0
+
+# ── Track: Dynatrace (OTel export — token spend, latency) ────────────────────
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp-proto-http>=1.24.0
+
+# ── Track: Elastic (incident memory layer + ES|QL search tool) ───────────────
+elasticsearch>=8.13.0
+
+# ── Track: Fivetran (pipeline healer — REST API) ─────────────────────────────
+# requests already included above
+
+# ── Track: GitLab (rollback agent — REST API) ────────────────────────────────
+# requests already included above
