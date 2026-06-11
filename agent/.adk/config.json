@@ -17,10 +17,7 @@
     },
     "fivetran": {
       "command": "npx",
-      "args": [
-        "-y",
-        "fivetran-mcp"
-      ],
+      "args": ["-y", "fivetran-mcp"],
       "env": {
         "FIVETRAN_API_KEY": "${FIVETRAN_API_KEY}",
         "FIVETRAN_API_SECRET": "${FIVETRAN_API_SECRET}"
@@ -28,13 +25,22 @@
     },
     "gitlab": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@gitlab-org/gitlab-mcp-server"
-      ],
+      "args": ["-y", "@gitlab-org/gitlab-mcp-server"],
       "env": {
         "GITLAB_TOKEN": "${GITLAB_TOKEN}",
         "GITLAB_API_URL": "${GITLAB_API_URL}"
+      }
+    },
+    "elastic": {
+      "_comment": "Elastic Agent Builder MCP server — copy endpoint URL from Kibana > Agent Builder > Tools UI",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@elastic/mcp-server-elasticsearch"
+      ],
+      "env": {
+        "ES_URL": "${ELASTIC_ENDPOINT}",
+        "ES_API_KEY": "${ELASTIC_API_KEY}"
       }
     }
   }
