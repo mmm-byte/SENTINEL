@@ -2,20 +2,14 @@
   "mcpServers": {
     "mongodb": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@mongodb-js/mongodb-mcp-server",
-        "--connectionString",
-        "${MONGODB_CONNECTION_STRING}"
-      ]
+      "args": ["-y", "@mongodb-js/mongodb-mcp-server"]
     },
     "phoenix": {
       "command": "npx",
       "args": [
         "-y",
         "@arizeai/phoenix-mcp",
-        "--baseUrl",
-        "https://app.phoenix.arize.com"
+        "--baseUrl", "https://app.phoenix.arize.com"
       ],
       "env": {
         "PHOENIX_API_KEY": "${ARIZE_PHOENIX_API_KEY}"

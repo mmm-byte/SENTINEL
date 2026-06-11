@@ -1,256 +1,211 @@
 """
-SENTINEL Evaluations — Track 2: Arize (WIN CONDITION)
-=======================================================
-This module closes the Arize self-improvement loop:
+SENTINEL — Arize Phoenix Self-Improvement Loop
+===============================================
+Track 2: Arize — WIN condition
 
-  1. run_pipeline_eval()  — Scores every SENTINEL run with LLM-as-a-Judge
-  2. build_eval_dataset() — Accumulates scored runs into a Phoenix dataset
-  3. improve_from_evals() — Reads low-scoring runs, generates prompt patches
+This module:
+  1. Pulls recent SENTINEL traces from Phoenix via REST API
+  2. Runs LLM-as-a-Judge evaluation on each trace:
+     - Was the patch strategy minimally invasive?
+     - Did the agent correctly classify all violation types?
+     - Was the quarantine decision correct?
+  3. Writes eval scores back to Phoenix as a labeled dataset
+  4. Generates a system-prompt improvement recommendation
+     based on patterns in low-scoring traces
 
-The judges' WIN condition: "agents that use their own observability data
-to improve over time."
-
-Run standalone:  python -m agent.evals
-Auto-called:     generate_incident_report() calls run_pipeline_eval()
+Call run_self_improvement_loop() after every 10 incidents
+or on a schedule (e.g. daily cron via Cloud Scheduler).
 """
 import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
-# Eval rubric — what SENTINEL is judged on
-PATCH_CORRECTNESS_RUBRIC = """
-You are evaluating a SENTINEL MongoDB schema continuity agent.
 
-SENTINEL ran a 5-step pipeline on a corrupt document and produced an incident report.
-Score the quality of its remediation on a scale of 0.0 to 1.0:
+# ── Judge prompt ───────────────────────────────────────────────────────────────
+JUDGE_SYSTEM_PROMPT = """
+You are an expert MongoDB database engineer and AI agent evaluator.
+You will be given a SENTINEL incident trace — the full sequence of tool
+calls and outputs from an autonomous schema-healing agent.
 
-  1.0 — CONTAINED: All violations fixed, schema patched minimally (validationLevel=moderate),
-        corrupt documents quarantined, no data deleted, downstream notified.
-  0.7 — CONTAINED with minor issues: Contained but patch was overly broad or
-        quarantine count was unexpectedly 0 despite violations.
-  0.5 — ESCALATE with good reasoning: Could not auto-remediate but correctly
-        identified the problem and escalated with a clear summary.
-  0.2 — ESCALATE with poor reasoning: Escalated without explaining why.
-  0.0 — FAILED: Pipeline did not complete or produced no report.
+Score the agent's performance on three dimensions (0.0 to 1.0 each):
 
-Incident report:
-{report_json}
+1. patch_minimality: Did the agent make the LEAST invasive patch possible?
+   (e.g. making one field optional is better than dropping the whole validator)
+   1.0 = perfectly minimal, 0.0 = unnecessarily destructive patch
 
-Respond ONLY with a JSON object: {{"score": <float>, "label": "PASS|REVIEW|FAIL", "reason": "<one sentence>"}}
+2. violation_accuracy: Did the agent correctly identify ALL violations and
+   ONLY real violations? No false positives, no missed violations.
+   1.0 = perfect classification, 0.0 = missed or hallucinated violations
+
+3. quarantine_correctness: Did the agent quarantine the right documents?
+   Should only quarantine truly corrupt docs, not valid ones.
+   1.0 = correct quarantine, 0.0 = wrong docs quarantined
+
+Return ONLY valid JSON:
+{
+  "patch_minimality": <float>,
+  "violation_accuracy": <float>,
+  "quarantine_correctness": <float>,
+  "overall": <float>,
+  "reasoning": "<one sentence>",
+  "improvement_hint": "<one actionable suggestion for the agent>"
+}
 """
 
 
-def run_pipeline_eval(incident_report: dict) -> dict:
+def run_self_improvement_loop(last_n_traces: int = 10) -> dict:
     """
-    Scores a completed SENTINEL incident report.
-    Tries LLM-as-a-Judge first (if Gemini available), falls back to rule-based.
+    WIN condition for Arize track:
+    Pulls traces → evaluates → writes scores back → returns improvement hints.
 
     Args:
-        incident_report: Full report dict from generate_incident_report().
+        last_n_traces: Number of recent traces to evaluate.
 
     Returns:
-        Eval result dict with score, label, reason, and improvement_hint.
+        Dict with eval_scores list, avg_scores, and improvement_recommendations.
     """
-    report_json = json.dumps(incident_report, indent=2, default=str)
+    api_key = os.environ.get("ARIZE_PHOENIX_API_KEY")
+    if not api_key:
+        logger.debug("[evals] ARIZE_PHOENIX_API_KEY not set — skipping eval loop")
+        return {"skipped": True, "reason": "Arize not configured"}
 
-    # Try LLM judge first
-    llm_result = _llm_judge(report_json)
-    if llm_result:
-        eval_result = llm_result
+    traces = _fetch_recent_traces(api_key, last_n_traces)
+    if not traces:
+        return {"skipped": True, "reason": "No traces found"}
+
+    eval_results = []
+    improvement_hints = []
+
+    for trace in traces:
+        score = _judge_trace(trace)
+        eval_results.append(score)
+        if score.get("overall", 1.0) < 0.75:
+            improvement_hints.append(score.get("improvement_hint", ""))
+
+    # Write scores back to Phoenix
+    _write_evals_to_phoenix(api_key, eval_results)
+
+    # Aggregate
+    if eval_results:
+        avg_overall = sum(r.get("overall", 0) for r in eval_results) / len(eval_results)
+        avg_patch = sum(r.get("patch_minimality", 0) for r in eval_results) / len(eval_results)
+        avg_accuracy = sum(r.get("violation_accuracy", 0) for r in eval_results) / len(eval_results)
     else:
-        # Deterministic fallback
-        eval_result = _rule_based_eval(incident_report)
-
-    eval_result["incident_id"] = incident_report.get("incident_id", "UNKNOWN")
-    eval_result["collection_name"] = incident_report.get("collection_name", "unknown")
-    eval_result["evaluated_at"] = datetime.now(timezone.utc).isoformat()
-
-    # Write to eval log
-    _write_eval_log(eval_result)
-
-    # Write to Phoenix as span annotation
-    _annotate_phoenix_span(eval_result)
-
-    # Trigger improvement if score is low
-    if eval_result.get("score", 1.0) < 0.7:
-        _flag_for_improvement(incident_report, eval_result)
-
-    logger.info(
-        "[evals] %s → score=%.2f label=%s",
-        eval_result["incident_id"],
-        eval_result.get("score", 0),
-        eval_result.get("label", "?"),
-    )
-    return eval_result
-
-
-def improve_from_evals() -> dict:
-    """
-    Reads the sentinel_improvement.jsonl log, identifies recurring failure
-    patterns, and returns a prompt patch suggestion.
-
-    This is the self-improvement loop:
-      Low eval score → logged → this function reads patterns → prompt updated
-
-    Returns:
-        Dict with 'patterns_found', 'prompt_patch', 'total_low_score_runs'.
-    """
-    log_path = os.environ.get("SENTINEL_IMPROVEMENT_LOG", "./sentinel_improvement.jsonl")
-    if not os.path.exists(log_path):
-        return {"patterns_found": [], "total_low_score_runs": 0, "prompt_patch": None}
-
-    runs = []
-    with open(log_path) as f:
-        for line in f:
-            try:
-                runs.append(json.loads(line.strip()))
-            except json.JSONDecodeError:
-                pass
-
-    if not runs:
-        return {"patterns_found": [], "total_low_score_runs": 0, "prompt_patch": None}
-
-    # Identify patterns
-    escalate_count = sum(1 for r in runs if r.get("final_status") == "ESCALATE")
-    low_patch = sum(1 for r in runs if r.get("patch_correctness", 1.0) < 0.5)
-    affected_collections = list({r.get("collection_name") for r in runs})
-
-    patterns = []
-    prompt_patches = []
-
-    if escalate_count > len(runs) * 0.3:
-        patterns.append(f"High escalation rate: {escalate_count}/{len(runs)} runs escalated")
-        prompt_patches.append(
-            "When violations include MISSING_REQUIRED_FIELD, always attempt "
-            "patch_collection_schema with fields_to_make_optional BEFORE escalating."
-        )
-
-    if low_patch > 0:
-        patterns.append(f"{low_patch} runs had low patch_correctness scores")
-        prompt_patches.append(
-            "Prefer the minimal patch: only relax fields that have active violations. "
-            "Never drop the entire $jsonSchema validator."
-        )
+        avg_overall = avg_patch = avg_accuracy = 0.0
 
     result = {
-        "patterns_found": patterns,
-        "total_low_score_runs": len(runs),
-        "affected_collections": affected_collections,
-        "prompt_patch": " ".join(prompt_patches) if prompt_patches else None,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "evaluated_traces": len(eval_results),
+        "avg_overall_score": round(avg_overall, 3),
+        "avg_patch_minimality": round(avg_patch, 3),
+        "avg_violation_accuracy": round(avg_accuracy, 3),
+        "improvement_recommendations": list(set(improvement_hints)),
+        "eval_timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    logger.info("[evals] Self-improvement report: %d patterns, %d low-score runs",
-                len(patterns), len(runs))
+    logger.info("[evals] Self-improvement loop complete: avg_score=%.3f", avg_overall)
     return result
 
 
-# ── Private helpers ────────────────────────────────────────────────────────────
+def _fetch_recent_traces(api_key: str, n: int) -> List[dict]:
+    """Fetch last N SENTINEL traces from Phoenix REST API."""
+    try:
+        import httpx
+        base = os.environ.get("ARIZE_PHOENIX_BASE_URL", "https://app.phoenix.arize.com")
+        headers = {"api_key": api_key, "Content-Type": "application/json"}
 
-def _llm_judge(report_json: str) -> Optional[dict]:
-    """Ask Gemini to evaluate the incident report using the rubric."""
+        resp = httpx.get(
+            f"{base}/v1/spans",
+            headers=headers,
+            params={
+                "project_name": "sentinel",
+                "limit": n,
+                "sort_by": "start_time",
+                "sort_dir": "desc",
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            spans = data.get("data", [])
+            logger.info("[evals] Fetched %d spans from Phoenix", len(spans))
+            return spans
+        logger.warning("[evals] Phoenix spans fetch returned %d", resp.status_code)
+        return []
+    except Exception as exc:
+        logger.error("[evals] Failed to fetch traces: %s", exc)
+        return []
+
+
+def _judge_trace(trace: dict) -> dict:
+    """Run LLM-as-a-Judge evaluation on a single trace."""
     try:
         import google.generativeai as genai  # type: ignore
-        api_key = os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            return None
-        genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.0-flash-exp")
-        prompt = PATCH_CORRECTNESS_RUBRIC.format(report_json=report_json[:3000])
-        resp = model.generate_content(prompt)
-        text = resp.text.strip()
-        # Extract JSON even if wrapped in markdown
-        if "```" in text:
-            text = text.split("```")[1].lstrip("json").strip()
-        return json.loads(text)
+
+        trace_summary = json.dumps({
+            "span_id": trace.get("context", {}).get("span_id", "unknown"),
+            "attributes": trace.get("attributes", {}),
+            "events": trace.get("events", [])[:10],  # cap at 10 events
+        }, indent=2)[:4000]  # cap tokens
+
+        prompt = f"{JUDGE_SYSTEM_PROMPT}\n\nTrace to evaluate:\n{trace_summary}"
+        response = model.generate_content(prompt)
+        raw = response.text.strip()
+
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+
+        scores = json.loads(raw)
+        scores["span_id"] = trace.get("context", {}).get("span_id", "unknown")
+        return scores
     except Exception as exc:
-        logger.debug("[evals] LLM judge failed, using rule-based: %s", exc)
-        return None
+        logger.error("[evals] Judge failed for trace: %s", exc)
+        return {
+            "patch_minimality": 0.5,
+            "violation_accuracy": 0.5,
+            "quarantine_correctness": 0.5,
+            "overall": 0.5,
+            "reasoning": f"Eval failed: {exc}",
+            "improvement_hint": "",
+        }
 
 
-def _rule_based_eval(report: dict) -> dict:
-    """Deterministic eval when LLM is not available."""
-    status = report.get("final_status", "UNKNOWN")
-    patched = report.get("schema_patched", False)
-    violations = report.get("violations_detected", 0)
-    quarantined = report.get("documents_quarantined", 0)
-
-    if status == "CONTAINED" and patched and violations > 0:
-        return {"score": 1.0, "label": "PASS",
-                "reason": "Contained with schema patch and quarantine."}
-    elif status == "CONTAINED" and not patched:
-        return {"score": 0.7, "label": "PASS",
-                "reason": "Contained but schema was not patched."}
-    elif status == "ESCALATE":
-        return {"score": 0.5, "label": "REVIEW",
-                "reason": "Escalated — human review required."}
-    else:
-        return {"score": 0.2, "label": "FAIL",
-                "reason": "Unknown status or pipeline did not complete."}
-
-
-def _write_eval_log(eval_result: dict) -> None:
-    """Append eval result to the JSONL eval log."""
-    log_path = os.environ.get("SENTINEL_AUDIT_LOG", "./sentinel_audit.jsonl")
+def _write_evals_to_phoenix(api_key: str, eval_results: List[dict]) -> None:
+    """Write evaluation scores back to Phoenix as annotations."""
     try:
-        with open(log_path, "a") as f:
-            f.write(json.dumps(eval_result) + "\n")
-    except Exception:
-        pass
+        import httpx
+        base = os.environ.get("ARIZE_PHOENIX_BASE_URL", "https://app.phoenix.arize.com")
+        headers = {"api_key": api_key, "Content-Type": "application/json"}
 
-
-def _annotate_phoenix_span(eval_result: dict) -> None:
-    """Write eval score as a Phoenix span annotation."""
-    api_key = os.environ.get("ARIZE_PHOENIX_API_KEY")
-    if not api_key:
-        return
-    try:
-        import httpx  # type: ignore
-        url = os.environ.get("ARIZE_PHOENIX_BASE_URL", "https://app.phoenix.arize.com")
-        payload = {"data": [{
-            "name": "sentinel_pipeline_eval",
-            "annotator_kind": "LLM" if os.environ.get("GOOGLE_API_KEY") else "CODE",
-            "result": {
-                "label": eval_result.get("label", "UNKNOWN"),
-                "score": eval_result.get("score", 0.0),
-                "explanation": eval_result.get("reason", ""),
-            },
-        }]}
-        httpx.post(
-            f"{url}/v1/span_annotations",
-            headers={"api_key": api_key, "Content-Type": "application/json"},
-            json=payload,
-            timeout=5,
-        )
+        for result in eval_results:
+            span_id = result.get("span_id")
+            if not span_id or span_id == "unknown":
+                continue
+            payload = {
+                "data": [{
+                    "span_id": span_id,
+                    "name": "sentinel_quality",
+                    "annotator_kind": "LLM",
+                    "result": {
+                        "label": "good" if result.get("overall", 0) >= 0.75 else "needs_improvement",
+                        "score": result.get("overall", 0.5),
+                        "explanation": result.get("reasoning", ""),
+                    },
+                }]
+            }
+            httpx.post(
+                f"{base}/v1/span_annotations",
+                headers=headers,
+                json=payload,
+                timeout=10,
+            )
+        logger.info("[evals] Wrote %d eval scores back to Phoenix", len(eval_results))
     except Exception as exc:
-        logger.debug("[evals] Phoenix annotation skipped: %s", exc)
-
-
-def _flag_for_improvement(incident: dict, eval_result: dict) -> None:
-    """Log low-scoring incidents for the self-improvement loop."""
-    log_path = os.environ.get("SENTINEL_IMPROVEMENT_LOG", "./sentinel_improvement.jsonl")
-    try:
-        with open(log_path, "a") as f:
-            f.write(json.dumps({
-                "incident_id": incident.get("incident_id"),
-                "collection_name": incident.get("collection_name"),
-                "final_status": incident.get("final_status"),
-                "patch_correctness": eval_result.get("score"),
-                "remediation_quality": eval_result.get("score"),
-                "label": eval_result.get("label"),
-                "reason": eval_result.get("reason"),
-                "pipeline_trace": incident.get("pipeline_trace", []),
-                "suggested_action": "review_patch_strategy",
-            }) + "\n")
-    except Exception:
-        pass
-
-
-if __name__ == "__main__":
-    # Standalone: read improvement log and print prompt patch
-    result = improve_from_evals()
-    print(json.dumps(result, indent=2))
+        logger.error("[evals] Failed to write evals to Phoenix: %s", exc)
