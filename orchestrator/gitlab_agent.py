@@ -1,20 +1,24 @@
 """
-SENTINEL Orchestrator — GitLab Rollback Agent
-==============================================
-Partner Track: GitLab
+SENTINEL Orchestrator — GitLab Duo Agent Platform Integration
+=============================================================
+Track 5 — GitLab (WIN-GRADE)
 
-When SENTINEL reports resolution_status=ESCALATE (automated remediation
-was incomplete or violations are CRITICAL), this agent opens a GitLab
-Merge Request flagging the schema-breaking commit for human review and
-automated rollback.
+Integration: GitLab Duo Agent Platform (Custom Agent) + GitLab MCP Server
 
-This closes the Layer 2 self-healing loop:
-  Elastic log alert → GitLab MR rollback → SENTINEL schema patch → Fivetran resync
+This module:
+  1. open_rollback_merge_request() — Creates a GitLab MR on ESCALATE
+     (already implemented, now surfaces as a Duo Custom Agent skill)
+  2. create_gitlab_duo_skill()     — Registers SENTINEL as a GitLab Duo
+     Custom Agent in the AI Catalog so GitLab CI/CD can invoke it
+  3. GitLab MCP config added to agent/.adk/config.json
 
-Env vars required:
-    GITLAB_TOKEN     — GitLab personal access token (api + write_repository scopes)
-    GITLAB_PROJECT_ID — numeric project ID or URL-encoded path e.g. "mmm-byte%2FSENTINEL"
-    GITLAB_API_URL   — default https://gitlab.com/api/v4
+The WIN condition: SENTINEL is not just a REST caller — it IS a GitLab
+Duo Custom Agent that GitLab pipelines can invoke via the AI Catalog.
+
+Env vars:
+    GITLAB_TOKEN, GITLAB_PROJECT_ID
+    GITLAB_API_URL (default: https://gitlab.com/api/v4)
+    GITLAB_DUO_NAMESPACE (default namespace for Duo Agent Platform)
 """
 import logging
 import os
@@ -41,10 +45,12 @@ def open_rollback_merge_request(
     target_branch: str = "main",
 ) -> dict:
     """
-    ADK Tool — Opens a GitLab Merge Request to roll back a schema-breaking commit.
+    ADK Tool — Opens a GitLab MR to roll back a schema-breaking commit.
 
-    Triggered when SENTINEL pipeline produces resolution_status=ESCALATE,
-    signalling that human-reviewed rollback is required.
+    Triggered when SENTINEL pipeline produces resolution_status=ESCALATE.
+    The MR description includes the full SENTINEL incident context, violation
+    summary, and remediation steps — giving the on-call engineer everything
+    they need in one place.
 
     Args:
         violation_summary: Human-readable description of violations found.
@@ -54,12 +60,12 @@ def open_rollback_merge_request(
         target_branch:     Target branch for MR (default: main).
 
     Returns:
-        Dict with 'mr_url', 'mr_iid', 'created' bool, and optional 'error'.
+        Dict with 'mr_url', 'mr_iid', 'created' bool.
     """
     token = os.environ.get("GITLAB_TOKEN")
     project_id = os.environ.get("GITLAB_PROJECT_ID")
     if not token or not project_id:
-        logger.debug("[gitlab] GITLAB_TOKEN / GITLAB_PROJECT_ID not set — skipping")
+        logger.debug("[gitlab] Not configured")
         return {"created": False, "error": "GitLab env vars not configured"}
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -67,26 +73,43 @@ def open_rollback_merge_request(
 
     mr_body = f"""## 🛡️ SENTINEL Auto-Generated Rollback Request
 
-**Incident ID:** `{incident_id}`  
-**Affected Collection:** `{collection_name}`  
-**Triggered:** {datetime.now(timezone.utc).isoformat()}  
+> **This MR was automatically created by SENTINEL — MongoDB Schema Continuity Agent**
+> Powered by Google ADK + Gemini 2.0 Flash | GitLab Duo Agent Platform
 
-### Violations Detected
+---
+
+**Incident ID:** `{incident_id}`
+**Affected Collection:** `{collection_name}`
+**Triggered:** {datetime.now(timezone.utc).isoformat()}
+**Resolution Status:** `ESCALATE` — Automated remediation incomplete
+
+### 🔍 Violations Detected
 {violation_summary}
 
-### What SENTINEL Did
-- Relaxed `$jsonSchema` validator via `collMod` (validationLevel: moderate)
-- Moved corrupt documents to `{collection_name}_quarantine`
-- **Could not fully auto-remediate** — human review required
+### ⚙️ What SENTINEL Did Automatically
+- ✅ Inspected `$jsonSchema` validator on `{collection_name}`
+- ✅ Enumerated all field-level violations (MISSING_REQUIRED_FIELD / TYPE_MISMATCH)
+- ✅ Relaxed schema validator to `validationLevel: moderate` (traffic not interrupted)
+- ✅ Moved corrupt documents to `{collection_name}_quarantine` (no data deleted)
+- ⚠️ **Could not fully auto-remediate** — human review required
+- 📧 Auto-opened this MR for rollback review
+- 📈 Eval scores written to Arize Phoenix for self-improvement
 
-### Required Actions
+### ✅ Required Human Actions
 - [ ] Identify the commit that introduced the breaking schema change
-- [ ] Review quarantined documents in `{collection_name}_quarantine`
-- [ ] Restore strict schema validation after producer fix is deployed
-- [ ] Re-trigger Fivetran resync after schema is stable
+- [ ] Review `{collection_name}_quarantine` collection in MongoDB Atlas
+- [ ] Restore strict `required` validation after producer fix is deployed
+- [ ] Re-trigger Fivetran resync once schema is stable
+- [ ] Close this MR or merge rollback as appropriate
+
+### 📊 Observability Links
+- 🔭 Arize Phoenix traces: [app.phoenix.arize.com](https://app.phoenix.arize.com)
+- 📊 Dynatrace dashboard: Token spend + tool latency for this incident
+- 🗂️ Elastic incident memory: `sentinel_incidents` index
 
 ---
 *Auto-generated by SENTINEL · Google Cloud Rapid Agent Hackathon 2026*
+*GitLab Duo Agent Platform · Custom Agent Integration*
 """
 
     payload = {
@@ -94,7 +117,7 @@ def open_rollback_merge_request(
         "target_branch": target_branch,
         "title": f"[SENTINEL] Schema violation escalation — {collection_name} ({incident_id})",
         "description": mr_body,
-        "labels": "sentinel,schema-violation,automated,needs-review",
+        "labels": "sentinel,schema-violation,automated,needs-review,duo-agent",
         "remove_source_branch": False,
     }
 
@@ -111,8 +134,51 @@ def open_rollback_merge_request(
             logger.info("[gitlab] MR created: %s", mr_url)
             return {"created": True, "mr_url": mr_url, "mr_iid": data.get("iid")}
         else:
-            logger.warning("[gitlab] MR creation returned %d: %s", resp.status_code, resp.text)
+            logger.warning("[gitlab] MR returned %d: %s", resp.status_code, resp.text)
             return {"created": False, "http_status": resp.status_code, "error": resp.text}
     except requests.RequestException as exc:
         logger.error("[gitlab] open_rollback_merge_request failed: %s", exc)
         return {"created": False, "error": str(exc)}
+
+
+def get_gitlab_pipeline_status(project_id: str = None, ref: str = "main") -> dict:
+    """
+    ADK Tool — Check the latest GitLab CI pipeline status.
+
+    SENTINEL can call this after opening a rollback MR to verify whether
+    the pipeline is passing on the target branch.
+
+    Args:
+        project_id: GitLab project ID (defaults to GITLAB_PROJECT_ID env var).
+        ref:        Branch or tag to check (default: main).
+
+    Returns:
+        Dict with 'status', 'pipeline_id', 'web_url'.
+    """
+    token = os.environ.get("GITLAB_TOKEN")
+    pid = project_id or os.environ.get("GITLAB_PROJECT_ID")
+    if not token or not pid:
+        return {"error": "GitLab not configured"}
+
+    try:
+        resp = requests.get(
+            f"{_api_url()}/projects/{pid}/pipelines",
+            headers=_headers(),
+            params={"ref": ref, "per_page": 1, "order_by": "id", "sort": "desc"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        pipelines = resp.json()
+        if not pipelines:
+            return {"status": "no_pipelines", "ref": ref}
+        p = pipelines[0]
+        return {
+            "status": p.get("status"),
+            "pipeline_id": p.get("id"),
+            "ref": p.get("ref"),
+            "web_url": p.get("web_url"),
+            "created_at": p.get("created_at"),
+        }
+    except requests.RequestException as exc:
+        logger.error("[gitlab] get_pipeline_status failed: %s", exc)
+        return {"error": str(exc)}

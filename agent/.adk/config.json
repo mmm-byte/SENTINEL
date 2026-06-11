@@ -2,17 +2,45 @@
   "mcpServers": {
     "mongodb": {
       "command": "npx",
-      "args": ["-y", "@mongodb-js/mongodb-mcp-server"]
+      "args": [
+        "-y",
+        "@mongodb-js/mongodb-mcp-server",
+        "--connectionString",
+        "${MONGODB_CONNECTION_STRING}"
+      ]
     },
     "phoenix": {
       "command": "npx",
       "args": [
         "-y",
         "@arizeai/phoenix-mcp",
-        "--baseUrl", "https://app.phoenix.arize.com"
+        "--baseUrl",
+        "https://app.phoenix.arize.com"
       ],
       "env": {
         "PHOENIX_API_KEY": "${ARIZE_PHOENIX_API_KEY}"
+      }
+    },
+    "fivetran": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "fivetran-mcp"
+      ],
+      "env": {
+        "FIVETRAN_API_KEY": "${FIVETRAN_API_KEY}",
+        "FIVETRAN_API_SECRET": "${FIVETRAN_API_SECRET}"
+      }
+    },
+    "gitlab": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@gitlab-org/gitlab-mcp-server"
+      ],
+      "env": {
+        "GITLAB_TOKEN": "${GITLAB_TOKEN}",
+        "GITLAB_API_URL": "${GITLAB_API_URL}"
       }
     }
   }
